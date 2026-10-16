@@ -213,6 +213,8 @@ describe("a link that allows part of a chain", () => {
       expect.objectContaining({
         sessionLabel: 'Yes, allow bash "git commit *" for this session',
       }),
+      // fork: the prompt-answerer seam passes the prompt hooks (ADR 0016).
+      expect.anything(),
     );
     const payload = dialog.mock.lastCall?.[2];
     expect(payload?.request).not.toHaveProperty("otherAskingUnits");

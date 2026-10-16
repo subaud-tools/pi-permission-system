@@ -725,6 +725,22 @@ describe("mergeUnifiedConfigs", () => {
     expect(merged.promptNotifications).toEqual([]);
   });
 
+  it("override promptAnswerers replaces base array", () => {
+    const merged = mergeUnifiedConfigs(
+      { promptAnswerers: ["base-answerer"] },
+      { promptAnswerers: ["pi-hail"] },
+    );
+    expect(merged.promptAnswerers).toEqual(["pi-hail"]);
+  });
+
+  it("base promptAnswerers survives when override omits it", () => {
+    const merged = mergeUnifiedConfigs(
+      { promptAnswerers: ["pi-hail"] },
+      { debugLog: true },
+    );
+    expect(merged.promptAnswerers).toEqual(["pi-hail"]);
+  });
+
   // Whole-object replacement rather than the shellTools shallow merge: a
   // key map is validated as a unit, and merging two valid maps could produce
   // a collision neither file's own validation could see.

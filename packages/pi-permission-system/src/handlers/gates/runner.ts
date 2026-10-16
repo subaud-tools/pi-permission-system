@@ -120,15 +120,16 @@ export class GateRunner {
     // records nothing else, so a session-sourced ask or deny means something
     // clamped a grant, and it takes the gate below instead of riding the grant.
     if (check.source === "session" && check.state === "allow") {
+      const decidedBySession: DecisionSource = {
+        kind: "session_approval",
+        surface: descriptor.surface,
+        pattern: check.matchedPattern ?? null,
+      };
       this.reporter.writeReviewLog("permission_request.session_approved", {
         ...logContext,
         resolution: "session_approved",
         sessionApprovalPattern: check.matchedPattern,
-        decidedBy: {
-          kind: "session_approval",
-          surface: descriptor.surface,
-          pattern: check.matchedPattern ?? null,
-        },
+        decidedBy: decidedBySession,
       });
       this.emitDecision(
         requestId,
@@ -138,6 +139,7 @@ export class GateRunner {
           agentName,
           "allow",
           "session_approved",
+          decidedBySession,
         ),
       );
       return { action: "allow" };
@@ -169,6 +171,7 @@ export class GateRunner {
           agentName,
           "allow",
           resolutionFor(decidedByYolo, { approved: true, forSession: false }),
+          decidedByYolo,
         ),
       );
       return { action: "allow" };
@@ -236,6 +239,7 @@ export class GateRunner {
           approved: gateResult.action === "allow",
           forSession: sessionGrant !== undefined,
         }),
+        gateResult.decidedBy,
       ),
     );
 

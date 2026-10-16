@@ -49,6 +49,13 @@ describe("unifiedConfigSchema", () => {
       expect(unifiedConfigSchema.safeParse({}).success).toBe(true);
     });
 
+    it("accepts a promptAnswerers list", () => {
+      const result = unifiedConfigSchema.safeParse({
+        promptAnswerers: ["pi-hail"],
+      });
+      expect(result.success).toBe(true);
+    });
+
     it("accepts a $schema field", () => {
       expect(
         unifiedConfigSchema.safeParse({ $schema: "https://example.com/s.json" })
@@ -87,6 +94,13 @@ describe("unifiedConfigSchema", () => {
     it("rejects a non-string entry in piInfrastructureReadPaths", () => {
       expect(
         unifiedConfigSchema.safeParse({ piInfrastructureReadPaths: ["a", 1] })
+          .success,
+      ).toBe(false);
+    });
+
+    it("rejects a non-string entry in promptAnswerers", () => {
+      expect(
+        unifiedConfigSchema.safeParse({ promptAnswerers: ["pi-hail", 1] })
           .success,
       ).toBe(false);
     });

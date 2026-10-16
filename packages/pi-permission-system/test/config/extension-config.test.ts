@@ -218,6 +218,18 @@ describe("normalizePermissionSystemConfig", () => {
     expect("authorizerChain" in result).toBe(false);
   });
 
+  it("includes promptAnswerers when provided", () => {
+    const result = normalizePermissionSystemConfig({
+      promptAnswerers: ["pi-hail"],
+    });
+    expect(result.promptAnswerers).toEqual(["pi-hail"]);
+  });
+
+  it("omits promptAnswerers when absent", () => {
+    const result = normalizePermissionSystemConfig({});
+    expect("promptAnswerers" in result).toBe(false);
+  });
+
   it("includes permissionDialogKeys when provided", () => {
     const result = normalizePermissionSystemConfig({
       permissionDialogKeys: { approve: "1", deny: "4" },

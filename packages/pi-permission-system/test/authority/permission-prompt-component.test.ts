@@ -9,6 +9,7 @@ import {
   vi,
 } from "vitest";
 import type {
+  PermissionPromptDecision,
   RequestPermissionOptions,
   UnattributedDecision,
 } from "#src/authority/permission-dialog";
@@ -17,6 +18,7 @@ import {
   type PermissionPromptView,
   type PromptPreferences,
   presentInlinePermissionPrompt,
+  type RemotePromptControl,
   requestPermissionDecision,
 } from "#src/authority/permission-prompt-component";
 import { DEFAULT_DIALOG_KEYS } from "#src/config/dialog-keys";
@@ -752,6 +754,363 @@ describe("presentInlinePermissionPrompt", () => {
         approved: false,
         state: "denied",
         decidedBy: { kind: "user", via: "select" },
+      });
+    });
+  });
+
+  describe("prompt-answer seam", () => {
+    const answererApproval: PermissionPromptDecision = {
+      approved: true,
+      state: "approved",
+      decidedBy: { kind: "answerer", name: "pi-hail" },
+    };
+    const answererDenial: PermissionPromptDecision = {
+      approved: false,
+      state: "denied",
+      decidedBy: { kind: "answerer", name: "pi-hail" },
+    };
+
+    /** Capture the control the dispatcher hands the seam. */
+    function captureSeam() {
+      const seam: { control?: RemotePromptControl } = {};
+      return {
+        seam,
+        onPrompt: (control: RemotePromptControl) => {
+          seam.control = control;
+        },
+      };
+    }
+
+    it("settles the TUI dialog remotely and dismisses the dialog", async () => {
+      const { view, captured } = makeFakeView(true);
+      const { seam, onPrompt } = captureSeam();
+      const promise = requestPermissionDecision(view, "Title", ASK, undefined, {
+        onPrompt,
+      });
+
+      expect(captured.component).toBeDefined();
+      seam.control?.settleRemotely(answererApproval);
+
+      expect(await promise).toEqual(answererApproval);
+      // The inline dialog is dismissed: its `done` ran so `ui.custom` cannot strand.
+      expect(captured.done).toHaveBeenCalledExactlyOnceWith(undefined);
+    });
+
+    it("offers the seam its control only once the dialog is on screen", () => {
+      const { view, captured } = makeFakeView(true);
+      let mountedWhenOffered: boolean | undefined;
+      void requestPermissionDecision(view, "Title", ASK, undefined, {
+        onPrompt: () => {
+          mountedWhenOffered = captured.component !== undefined;
+        },
+      });
+
+      expect(mountedWhenOffered).toBe(true);
+    });
+
+    it("aborts the select fallback on a remote answer and resolves with it", async () => {
+      let capturedOpts: { signal?: AbortSignal } | undefined;
+      const select = vi.fn(
+        (_title: string, _options: string[], opts?: { signal?: AbortSignal }) =>
+          new Promise<string | undefined>((resolve) => {
+            capturedOpts = opts;
+            opts?.signal?.addEventListener(
+              "abort",
+              () => {
+                resolve(undefined);
+              },
+              { once: true },
+            );
+          }),
+      );
+      const view = makeView("rpc", { select, input: vi.fn(), custom: vi.fn() });
+      const { seam, onPrompt } = captureSeam();
+      const promise = requestPermissionDecision(view, "Title", ASK, undefined, {
+        onPrompt,
+      });
+
+      seam.control?.settleRemotely(answererDenial);
+
+      expect(await promise).toEqual(answererDenial);
+      expect(capturedOpts?.signal?.aborted).toBe(true);
+    });
+
+    it("resolves with the remote answer even when the host ignores the abort", async () => {
+      const select = vi.fn(
+        () => new Promise<string | undefined>(() => undefined),
+      );
+      const view = makeView("rpc", { select, input: vi.fn(), custom: vi.fn() });
+      const { seam, onPrompt } = captureSeam();
+      const promise = requestPermissionDecision(view, "Title", ASK, undefined, {
+        onPrompt,
+      });
+
+      seam.control?.settleRemotely(answererDenial);
+
+      expect(await promise).toEqual(answererDenial);
+    });
+
+    it("resolves with the remote answer when the aborted fallback rejects", async () => {
+      const select = vi.fn(
+        (_title: string, _options: string[], opts?: { signal?: AbortSignal }) =>
+          new Promise<string | undefined>((_resolve, reject) => {
+            opts?.signal?.addEventListener(
+              "abort",
+              () => {
+                reject(new Error("aborted"));
+              },
+              { once: true },
+            );
+          }),
+      );
+      const view = makeView("rpc", { select, input: vi.fn(), custom: vi.fn() });
+      const { seam, onPrompt } = captureSeam();
+      const promise = requestPermissionDecision(view, "Title", ASK, undefined, {
+        onPrompt,
+      });
+
+      seam.control?.settleRemotely(answererDenial);
+
+      expect(await promise).toEqual(answererDenial);
+    });
+
+    describe("first settle wins", () => {
+      beforeEach(() => {
+        vi.useFakeTimers();
+      });
+
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      type Step =
+        | "human:yes"
+        | "human:no"
+        | "human:cancel"
+        | "phone:allow"
+        | "phone:deny"
+        | "timeout"
+        /** One microtask. */
+        | "tick"
+        /** Long enough for every pending continuation to run. */
+        | "later";
+
+      const TIMEOUT_MS = 60_000;
+      const humanYes = (via: string) => ({
+        approved: true,
+        state: "approved",
+        decidedBy: { kind: "user", via },
+      });
+      const humanNo = (via: string) => ({
+        approved: false,
+        state: "denied",
+        decidedBy: { kind: "user", via },
+      });
+      const unanswered = {
+        approved: false,
+        state: "denied",
+        confirmationUnavailable: true,
+        decidedBy: { kind: "unanswered", timeoutMs: TIMEOUT_MS },
+      };
+
+      // Each row: the surface, the steps in order, and the decision. The first
+      // source to settle wins with its own verdict; nothing later changes it.
+      const rows: Array<{
+        name: string;
+        surface: "dialog" | "select";
+        steps: Step[];
+        expected: unknown;
+      }> = [
+        {
+          name: "dialog: human yes, then phone allow",
+          surface: "dialog",
+          steps: ["human:yes", "phone:allow"],
+          expected: humanYes("dialog"),
+        },
+        {
+          name: "dialog: human cancel, then phone allow",
+          surface: "dialog",
+          steps: ["human:cancel", "phone:allow"],
+          expected: humanNo("dialog"),
+        },
+        {
+          name: "dialog: phone allow, then human no",
+          surface: "dialog",
+          steps: ["phone:allow", "human:no"],
+          expected: answererApproval,
+        },
+        {
+          name: "dialog: timeout, then phone allow",
+          surface: "dialog",
+          steps: ["timeout", "phone:allow"],
+          expected: unanswered,
+        },
+        {
+          name: "dialog: phone deny, then timeout",
+          surface: "dialog",
+          steps: ["phone:deny", "timeout"],
+          expected: answererDenial,
+        },
+        {
+          name: "review 1: dialog human no, phone allow one microtask later",
+          surface: "dialog",
+          steps: ["human:no", "tick", "phone:allow"],
+          expected: humanNo("dialog"),
+        },
+        {
+          name: "select: human yes, then phone allow",
+          surface: "select",
+          steps: ["human:yes", "later", "phone:allow"],
+          expected: humanYes("select"),
+        },
+        {
+          name: "select: phone deny, then human yes",
+          surface: "select",
+          steps: ["phone:deny", "human:yes"],
+          expected: answererDenial,
+        },
+        {
+          name: "select: timeout, then phone allow",
+          surface: "select",
+          steps: ["timeout", "phone:allow"],
+          expected: unanswered,
+        },
+        {
+          name: "select: phone allow, then timeout",
+          surface: "select",
+          steps: ["phone:allow", "timeout"],
+          expected: answererApproval,
+        },
+        {
+          name: "review 2: select human no, phone allow one microtask later",
+          surface: "select",
+          steps: ["human:no", "tick", "phone:allow"],
+          expected: humanNo("select"),
+        },
+        {
+          name: "review 3: select human cancel, phone allow one microtask later",
+          surface: "select",
+          steps: ["human:cancel", "tick", "phone:allow"],
+          expected: humanNo("select"),
+        },
+        // Phone called settle first; the real host can't produce this order
+        // (rpc-mode.js createDialogPromise resolves from a stdin message).
+        {
+          name: "review 3 repro: select human cancel, phone allow same tick",
+          surface: "select",
+          steps: ["human:cancel", "phone:allow"],
+          expected: answererApproval,
+        },
+        {
+          name: "fix 2: select human no, phone allow same tick",
+          surface: "select",
+          steps: ["human:no", "phone:allow"],
+          expected: answererApproval,
+        },
+      ];
+
+      /** A fallback whose `select` the test answers, and which a dismissal resolves `undefined`. */
+      function makeFallback() {
+        const host: { answer?: (choice: string | undefined) => void } = {};
+        const select = vi.fn(
+          (
+            _title: string,
+            _options: string[],
+            opts?: { signal?: AbortSignal },
+          ) =>
+            new Promise<string | undefined>((resolve) => {
+              host.answer = resolve;
+              opts?.signal?.addEventListener("abort", () => {
+                resolve(undefined);
+              });
+            }),
+        );
+        const view = makeView(
+          "rpc",
+          { select, input: vi.fn(), custom: vi.fn() },
+          { promptTimeoutMs: TIMEOUT_MS },
+        );
+        const keys = { "human:yes": "Yes", "human:no": "No" } as const;
+        return {
+          view,
+          human: (step: "human:yes" | "human:no" | "human:cancel") => {
+            host.answer?.(step === "human:cancel" ? undefined : keys[step]);
+          },
+        };
+      }
+
+      function makeDialog() {
+        const { view, captured } = makeFakeView(true, {
+          promptTimeoutMs: TIMEOUT_MS,
+        });
+        const keys = { "human:yes": "y", "human:no": "n" } as const;
+        return {
+          view,
+          human: (step: "human:yes" | "human:no" | "human:cancel") => {
+            if (step === "human:cancel") {
+              captured.component?.handleInput("\u001b");
+              return;
+            }
+            captured.component?.handleInput(keys[step]);
+            captured.component?.handleInput(keys[step]);
+          },
+        };
+      }
+
+      it.each(rows)("$name", async ({ surface, steps, expected }) => {
+        const { view, human } =
+          surface === "dialog" ? makeDialog() : makeFallback();
+        const { seam, onPrompt } = captureSeam();
+        const promise = requestPermissionDecision(
+          view,
+          "Title",
+          ASK,
+          undefined,
+          {
+            onPrompt,
+          },
+        );
+
+        for (const step of steps) {
+          if (step === "tick") {
+            await Promise.resolve();
+          } else if (step === "later") {
+            await vi.advanceTimersByTimeAsync(0);
+          } else if (step === "timeout") {
+            await vi.advanceTimersByTimeAsync(TIMEOUT_MS);
+          } else if (step === "phone:allow") {
+            seam.control?.settleRemotely(answererApproval);
+          } else if (step === "phone:deny") {
+            seam.control?.settleRemotely(answererDenial);
+          } else {
+            human(step);
+          }
+        }
+
+        expect(await promise).toStrictEqual(expected);
+      });
+
+      it("tells the phone whether its settle won", () => {
+        const won = captureSeam();
+        void requestPermissionDecision(
+          makeDialog().view,
+          "Title",
+          ASK,
+          undefined,
+          {
+            onPrompt: won.onPrompt,
+          },
+        );
+        expect(won.seam.control?.settleRemotely(answererApproval)).toBe(true);
+        expect(won.seam.control?.settleRemotely(answererDenial)).toBe(false);
+
+        const lost = captureSeam();
+        const dialog = makeDialog();
+        void requestPermissionDecision(dialog.view, "Title", ASK, undefined, {
+          onPrompt: lost.onPrompt,
+        });
+        dialog.human("human:no");
+        expect(lost.seam.control?.settleRemotely(answererApproval)).toBe(false);
       });
     });
   });

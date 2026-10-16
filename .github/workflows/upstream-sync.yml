@@ -1,0 +1,29 @@
+name: upstream-sync
+on:
+  schedule:
+    - cron: "35 9 * * *"
+  workflow_dispatch:
+    inputs:
+      force: { type: boolean, default: false, description: "Publish the current state even if already in sync" }
+      dry_run: { type: boolean, default: false, description: "Run rebase/test/build/pack end to end; publish, push and issue nothing" }
+      notify_test: { type: boolean, default: false, description: "Open and close a test issue to prove alerts reach you, then stop" }
+permissions: { contents: write, issues: write, id-token: write }
+concurrency: { group: upstream-sync, cancel-in-progress: false }
+jobs:
+  sync:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: schuettc/tools-actions/fork-sync@v0.10.3
+        with:
+          upstream_repo: "gotgenes/pi-packages"
+          upstream_branch: "main"
+          pkg_name: "@schuettc/pi-permission-system"
+          pkg_dir: "packages/pi-permission-system"
+          tag_prefix: "pi-permission-system-v"
+          test_cmd: "corepack enable && pnpm install --frozen-lockfile && pnpm --filter @gotgenes/pi-permission-system run check && pnpm --filter @gotgenes/pi-permission-system test"
+          # Also test on the newest Node LTS: pi runs on the LTS line (dotfiles pins node@24).
+          test_node_versions: "lts"
+          build_cmd: "corepack enable && pnpm install --frozen-lockfile && pnpm --filter @gotgenes/pi-permission-system run build:types"
+          force: ${{ inputs.force }}
+          dry_run: ${{ inputs.dry_run }}
+          notify_test: ${{ inputs.notify_test }}

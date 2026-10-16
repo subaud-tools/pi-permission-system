@@ -162,6 +162,10 @@ export interface RequestPermissionOptions {
  * by the signal: an `undefined` while it is aborted answers `undefined` (the
  * prompt was dismissed, so no human ruled), and one while it is live keeps its
  * meaning as the human's cancel.
+ *
+ * `onDecided` hears the human's decision as it is made, before this function's
+ * promise settles, so a caller arbitrating the ask against another answerer
+ * can latch it with no gap (fork: prompt-answerer seam, ADR 0016).
  */
 export async function requestPermissionDecisionFromUi(
   ui: PermissionDecisionUi,
@@ -169,7 +173,12 @@ export async function requestPermissionDecisionFromUi(
   message: string,
   options?: RequestPermissionOptions,
   signal?: AbortSignal,
+  onDecided?: (decision: UnattributedDecision) => void,
 ): Promise<UnattributedDecision | undefined> {
+  const decided = (decision: UnattributedDecision): UnattributedDecision => {
+    onDecided?.(decision);
+    return decision;
+  };
   const dialogOptions: PermissionDialogOptions = { signal };
   const dismissed = (answer: string | undefined): boolean =>
     answer === undefined && signal?.aborted === true;
@@ -193,10 +202,10 @@ export async function requestPermissionDecisionFromUi(
   }
 
   if (selected === APPROVE_OPTION) {
-    return {
+    return decided({
       approved: true,
       state: "approved",
-    };
+    });
   }
 
   if (selected === sessionOption || (widthOption && selected === widthOption)) {
@@ -216,16 +225,18 @@ export async function requestPermissionDecisionFromUi(
       if (dismissed(scope)) {
         return undefined;
       }
-      return sessionApproval(
-        // A cancelled scope select (undefined) falls back to the
-        // least-privilege subagent scope.
-        scope === options.sessionScope.servingSessionLabel
-          ? "approved_for_serving_session"
-          : "approved_for_session",
-        width,
+      return decided(
+        sessionApproval(
+          // A cancelled scope select (undefined) falls back to the
+          // least-privilege subagent scope.
+          scope === options.sessionScope.servingSessionLabel
+            ? "approved_for_serving_session"
+            : "approved_for_session",
+          width,
+        ),
       );
     }
-    return sessionApproval("approved_for_session", width);
+    return decided(sessionApproval("approved_for_session", width));
   }
 
   if (selected === DENY_WITH_REASON_OPTION) {
@@ -239,8 +250,8 @@ export async function requestPermissionDecisionFromUi(
     }
     const denialReason = normalizePermissionDenialReason(typed);
 
-    return createDeniedPermissionDecision(denialReason);
+    return decided(createDeniedPermissionDecision(denialReason));
   }
 
-  return createDeniedPermissionDecision();
+  return decided(createDeniedPermissionDecision());
 }

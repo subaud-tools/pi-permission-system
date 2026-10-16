@@ -16,6 +16,7 @@ import type {
   requestPermissionDecision,
 } from "./permission-prompt-component";
 import type { PromptPermissionDetails } from "./permission-prompter";
+import type { OpenPromptRegistry } from "./prompt-answerer-registry";
 import type { SubagentDetector } from "./subagent-detection";
 import type { SubagentSessionRegistry } from "./subagent-registry";
 
@@ -130,6 +131,13 @@ export interface AuthorizerSelectionDeps {
   serving: TargetServingLookup;
   /** The forwarding timeout, read live so a config edit applies to the next ask. */
   getForwardingTimeoutMs: () => number;
+  /**
+   * The node's open-prompt registry, threaded into `LocalUserAuthorizer` so a
+   * listed prompt answerer can settle a showing dialog remotely. Shared rather
+   * than owned by the terminal, for the same reason as {@link dialogs}: a
+   * terminal is rebuilt on every activation.
+   */
+  promptAnswererRegistry: OpenPromptRegistry;
   logger: DebugReviewLogger;
 }
 
@@ -162,6 +170,7 @@ export function selectAuthorizer(
             name: ctx.sessionManager.getSessionName(),
             cwd: ctx.cwd,
           }),
+          registry: deps.promptAnswererRegistry,
         }),
         adjudicatesLocally: true,
       };

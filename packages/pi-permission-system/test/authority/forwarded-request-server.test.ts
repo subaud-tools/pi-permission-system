@@ -1032,6 +1032,8 @@ describe("processInbox — the serving node's chain adjudicates a forwarded ask"
         request: expect.objectContaining({ value: "git commit -m x" }),
       }),
       expect.anything(),
+      // fork: the prompt-answerer seam passes the prompt hooks (ADR 0016).
+      expect.anything(),
     );
     expect(
       recorder.getRuleset().map(({ surface, pattern }) => [surface, pattern]),
@@ -1597,6 +1599,7 @@ describe("processInbox — terminal decision broadcast", () => {
         agentName: "Explore",
         result: "allow",
         resolution: "user_approved",
+        decidedBy: DECIDED_BY_HUMAN,
         origin: null,
         matchedPattern: null,
         forwarding: {

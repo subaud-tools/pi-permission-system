@@ -82,6 +82,27 @@ export interface PromptPreferences {
 }
 
 /**
+ * The remote-settlement half of the prompt seam: the caller hands
+ * {@link requestPermissionDecision} an `onPrompt` callback, and the dispatcher
+ * hands that callback back a `control` it can use to settle the *showing*
+ * prompt from elsewhere (the phone, via `registerPromptAnswerer`).
+ *
+ * `settleRemotely` settles the prompt with the answerer-attributed decision the
+ * caller passes -- pre-attributed, because only the caller knows the
+ * answerer's name (#726) -- and dismisses the human dialog. It returns whether
+ * it won: the first settle wins, and a human answer or the answer window that
+ * settled first makes it a no-op that returns `false`.
+ */
+export interface RemotePromptControl {
+  settleRemotely(decision: PermissionPromptDecision): boolean;
+}
+
+/** The seam the caller supplies to observe a prompt going on screen. */
+export interface PromptSeam {
+  onPrompt(control: RemotePromptControl): void;
+}
+
+/**
  * Route a permission ask to the inline keybind dialog in TUI mode, or the
  * `select()`/`input()` flow otherwise (RPC / frontend — the #519 constraint).
  *
@@ -96,23 +117,87 @@ export interface PromptPreferences {
  * It also opens the prompt's {@link AnswerWindow} as the prompt is shown. A
  * surface the window dismissed answers `undefined`, and the window, which is
  * what decided, stamps the `unanswered` decision itself.
+ *
+ * When a `seam` is supplied, the human, the window and the remote answerer
+ * each settle one latch the moment their answer is final, and the first
+ * settle is the decision (ADR 0016). With no `seam` the behavior is exactly
+ * the single-surface path.
  */
 export async function requestPermissionDecision(
   view: PermissionPromptView,
   title: string,
   payload: PromptPayload,
   options?: RequestPermissionOptions,
+  seam?: PromptSeam,
 ): Promise<PermissionPromptDecision> {
   const window = AnswerWindow.open(view.promptTimeoutMs);
   const surface = chooseDecisionSurface(view, title, payload, options);
-  try {
-    const answer = await surface.ask(window);
-    return answer === undefined
-      ? window.expiredDecision()
-      : attributeToHuman(answer, surface.via);
-  } finally {
-    window.close();
+  if (!seam) {
+    try {
+      const answer = await surface.ask(window);
+      return answer === undefined
+        ? window.expiredDecision()
+        : attributeToHuman(answer, surface.via);
+    } finally {
+      window.close();
+    }
   }
+  // One latch decides the prompt: the first settle wins, later ones lose and
+  // change nothing. Each source settles the moment its answer is final.
+  const latch = Promise.withResolvers<PermissionPromptDecision>();
+  let open = true;
+  const settle = (decision: PermissionPromptDecision): boolean => {
+    if (!open) {
+      return false;
+    }
+    open = false;
+    window.close();
+    latch.resolve(decision);
+    return true;
+  };
+  const fail = (error: unknown): void => {
+    if (open) {
+      open = false;
+      window.close();
+      latch.reject(error);
+    }
+  };
+  window.signal?.addEventListener("abort", () =>
+    settle(window.expiredDecision()),
+  );
+  // A remote win dismisses the surface through the same signal as the window.
+  const remote = new AbortController();
+  const clock: DialogClock = {
+    signal: window.signal
+      ? AbortSignal.any([window.signal, remote.signal])
+      : remote.signal,
+    get pendingTimeoutMs() {
+      return window.pendingTimeoutMs;
+    },
+    engage: () => {
+      window.engage();
+    },
+  };
+  // The human settles through `onDecided` as the answer is made, so the
+  // surface's own promise decides nothing: it only reports a host that failed
+  // or closed the prompt with nothing settled.
+  surface
+    .ask(clock, (answer) => settle(attributeToHuman(answer, surface.via)))
+    .then(() => {
+      fail(new Error("the prompt closed with nothing settled"));
+    }, fail);
+  // Offered to the seam only once the surface is asked, so a remote answer
+  // can never race ahead of the dialog it dismisses.
+  seam.onPrompt({
+    settleRemotely: (decision) => {
+      if (!settle(decision)) {
+        return false;
+      }
+      remote.abort();
+      return true;
+    },
+  });
+  return latch.promise;
 }
 
 /**
@@ -122,7 +207,10 @@ export async function requestPermissionDecision(
  */
 interface DecisionSurface {
   via: UserDecisionSurface;
-  ask: (window: DialogClock) => Promise<UnattributedDecision | undefined>;
+  ask: (
+    window: DialogClock,
+    onDecided?: (decision: UnattributedDecision) => void,
+  ) => Promise<UnattributedDecision | undefined>;
 }
 
 /**
@@ -144,14 +232,28 @@ function chooseDecisionSurface(
   if (view.mode === "tui") {
     return {
       via: "dialog",
-      ask: (window) =>
-        presentInlinePermissionPrompt(view, title, payload, options, window),
+      ask: (window, onDecided) =>
+        presentInlinePermissionPrompt(
+          view,
+          title,
+          payload,
+          options,
+          window,
+          onDecided,
+        ),
     };
   }
   return {
     via: "select",
-    ask: (window) =>
-      askThroughFallback(view, title, payload, options, window.signal),
+    ask: (window, onDecided) =>
+      askThroughFallback(
+        view,
+        title,
+        payload,
+        options,
+        window.signal,
+        onDecided,
+      ),
   };
 }
 
@@ -161,6 +263,7 @@ function askThroughFallback(
   payload: PromptPayload,
   options: RequestPermissionOptions | undefined,
   signal: AbortSignal | undefined,
+  onDecided?: (decision: UnattributedDecision) => void,
 ): Promise<UnattributedDecision | undefined> {
   // The fallback renders once and cannot re-render, so it neither paints nor
   // offers an expansion; it substitutes a nominal width for the terminal size
@@ -175,6 +278,7 @@ function askThroughFallback(
     rendered.lines.join("\n"),
     options,
     signal,
+    onDecided,
   );
 }
 
@@ -215,6 +319,7 @@ export function presentInlinePermissionPrompt(
   payload: PromptPayload,
   options?: RequestPermissionOptions,
   clock?: DialogClock,
+  onDecided?: (decision: UnattributedDecision) => void,
 ): Promise<UnattributedDecision | undefined> {
   const config: PromptModelConfig = {
     doublePressToConfirm: view.doublePressToConfirm,
@@ -253,7 +358,10 @@ export function presentInlinePermissionPrompt(
         () => {
           tui.requestRender();
         },
-        done,
+        (decision) => {
+          onDecided?.(decision);
+          done(decision);
+        },
         clock,
       );
     },

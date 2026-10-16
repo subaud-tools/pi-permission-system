@@ -76,6 +76,9 @@ This clamp is deny-preserving and, like `yoloMode`, applied at composition; when
   // Ordered names of registered live-authority chain links (empty = none)
   "authorizerChain": [],
 
+  // Names of prompt answerers permitted to settle a showing prompt (empty = none)
+  "promptAnswerers": [],
+
   // Flat permission policy
   "permission": {
     "*": "ask",                              // universal fallback
@@ -122,6 +125,7 @@ This clamp is deny-preserving and, like `yoloMode`, applied at composition; when
 | `toolTextSummaryMaxLength`  | —        | **Deprecated and ignored.** Superseded by `promptMaxRows` / `promptFieldMaxWidth`. Still accepted so an existing config is not rejected, but the value no longer applies; setting it logs a warning.                                         |
 | `piInfrastructureReadPaths` | `[]`     | Extra directories to auto-allow for reads, bypassing the `external_directory` gate. Supports `~`/`$HOME`/`${HOME}` expansion and wildcard patterns (`*`, `?`).                                                                               |
 | `authorizerChain`           | `[]`     | Ordered names of registered live-authority chain links to consult before the terminal authorizer (see [Authorizer chain](#authorizer-chain--case-by-case-decision-links)).                                                                   |
+| `promptAnswerers`           | `[]`     | Names of prompt answerers allowed to settle a *showing* prompt remotely (e.g. the phone, via `pi-hail`). Opt-in, like `authorizerChain`: an unlisted answerer is ignored and logged once. See `registerPromptAnswerer`.                      |
 
 Both logs write to `~/.pi/agent/extensions/pi-permission-system/logs/`.
 No debug output is printed to the terminal.

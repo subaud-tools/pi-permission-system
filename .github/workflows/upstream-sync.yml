@@ -13,11 +13,11 @@ jobs:
   sync:
     runs-on: ubuntu-26.04
     steps:
-      - uses: schuettc/tools-actions/fork-sync@v0.10.3
+      - uses: subaud-tools/tools-actions/fork-sync@v0.11.0
         with:
           upstream_repo: "gotgenes/pi-packages"
           upstream_branch: "main"
-          pkg_name: "@schuettc/pi-permission-system"
+          pkg_name: "@subaud-tools/pi-permission-system"
           pkg_dir: "packages/pi-permission-system"
           tag_prefix: "pi-permission-system-v"
           test_cmd: "corepack enable && pnpm install --frozen-lockfile && pnpm --filter @gotgenes/pi-permission-system run check && pnpm --filter @gotgenes/pi-permission-system test"
